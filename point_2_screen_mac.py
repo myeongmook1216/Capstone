@@ -115,8 +115,13 @@ class Demo:
                 else:
                     selected_point = mid_point  # 양쪽 눈(중앙) 시선 좌표
 
-                pts = draw_utils_mac.display_easyocr_canv(CANV_MODE=CANV_MODE, cur_pos=selected_point, custom_param=CUSTOM_PARAM)
-                
+                pts = draw_utils_mac.display_laser_easyocr_canv(CANV_MODE=CANV_MODE, cur_pos=selected_point, custom_param=CUSTOM_PARAM)
+                #pts = draw_utils_mac.display_canv(CANV_MODE=CANV_MODE, cur_pos=mid_point)
+        
+                #display_laser_easyocr_canv
+                #display_easyocr_canv
+                #display
+
                 self.pts.append(pts)
                 # self.true_pos.append(pts[0])
                 # self.cur_pos.append(pts[1])
@@ -156,6 +161,15 @@ class Demo:
                 self._draw_face_template_model(face)
                 self._draw_gaze_vector(face)  # 시선 벡터를 잡아오는 부분을 의미
                 self._display_normalized_image(face)
+                
+                
+                #################### 눈 부분 출력 ##################################
+                #if self.config.mode == GazeEstimationMethod.MPIIGaze.name:
+                #    eye_region = self._extract_eye_region(face)
+                #    if eye_region is not None:
+                #        self.visualize_eye_with_center(face)
+                #################################################################
+                
 
             if self.config.demo.use_camera:  # 카메라가 사용된 경우, 이미지를 좌우 반전시킴.
                 self.visualizer.image = self.visualizer.image[:, ::-1]
@@ -175,6 +189,69 @@ class Demo:
         self.cap.release()
         if self.writer:
             self.writer.release()
+
+##################### 여기부터 눈 수정 ########################        
+    def visualize_eye_with_center(self, face: Face):
+        """
+        얼굴 객체에서 추출한 눈 영역에 라인 드로잉 효과를 적용하고,
+        흰색 배경 위에 중심점을 표시하여 시각화합니다.
+        """
+        eye_region = self._extract_eye_region(face)
+        if eye_region is not None:
+            # 라인 드로잉 스타일 적용
+            eye_region_line_drawing = self.apply_line_drawing_effect(eye_region)
+
+            # 흰색 배경 생성
+            background = np.ones_like(eye_region_line_drawing) * 255
+
+            # 배경에 라인 드로잉 효과 결합
+            eye_visualization = cv2.addWeighted(background, 0.5, eye_region_line_drawing, 0.5, 0)
+
+            # 오른쪽 및 왼쪽 눈 중심 좌표 가져오기
+            for key in [FacePartsName.REYE, FacePartsName.LEYE]:
+                eye = getattr(face, key.name.lower())
+                center = tuple(map(int, eye.center[:2]))  # 중심 좌표를 정수로 변환
+                if center is not None:
+                    # 중심 좌표를 시각화
+                    cv2.circle(eye_visualization, center, radius=5, color=(0, 0, 255), thickness=-1)
+                    cv2.putText(eye_visualization, f'{key.name} center', (center[0] + 10, center[1] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+
+            # 스케일 조정 및 출력
+            SCALE_FACTOR = 5
+            eye_visualization_resized = cv2.resize(eye_visualization, (0, 0), fx=SCALE_FACTOR, fy=SCALE_FACTOR)
+            cv2.imshow('eye_region_with_center', eye_visualization_resized)
+
+    def apply_line_drawing_effect(self, image):
+        """
+        눈 부분을 라인 드로잉 스타일로 전환하는 메서드.
+        """
+        if len(image.shape) == 2 or image.shape[2] == 1:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        # 그레이스케일 변환
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # 엣지 검출
+        edges = cv2.Canny(gray, 50, 150)
+        # 컬러 이미지로 변환하여 엣지 라인을 흰색으로 표시
+        line_drawing = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+
+        return line_drawing
+    
+
+    def _extract_eye_region(self, face: Face) -> Optional[np.ndarray]:
+        """
+        얼굴 객체에서 눈 영역만 추출하여 반환합니다.
+        """
+        if hasattr(face, 'reye') and hasattr(face, 'leye'):
+            reye = face.reye.normalized_image
+            leye = face.leye.normalized_image
+            if reye is not None and leye is not None:
+                # 두 눈을 이어붙여 단일 이미지로 반환
+                return np.hstack([reye, leye])
+        return None
+
+#########################################################
 
     def _create_capture(self) -> cv2.VideoCapture:
         #fps = 15
@@ -389,8 +466,9 @@ class Demo:
         if self.config.mode == GazeEstimationMethod.MPIIGaze.name:
             for key in [FacePartsName.REYE, FacePartsName.LEYE]:  # 오른쪽 눈(REYE), 왼쪽 눈(LEYE)의 정보를 추출하기 위해 두 눈을 반복
                 eye = getattr(face, key.name.lower())
-                self.visualizer.draw_3d_line(
-                    eye.center, eye.center + length * eye.gaze_vector)
+                if (EYE_SELECT == 0 and key == FacePartsName.LEYE) or (EYE_SELECT == 1 and key == FacePartsName.REYE) or (EYE_SELECT == 2):
+                    self.visualizer.draw_3d_line(
+                        eye.center, eye.center + length * eye.gaze_vector)
 
                 if key.name.lower() == 'reye':
                     self.right_eye_cent.append(eye.center)
