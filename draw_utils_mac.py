@@ -16,7 +16,6 @@ from PIL import Image, ImageDraw, ImageFont
 # EasyOCR 객체 생성
 reader = easyocr.Reader(['ko', 'en'])
 
-
 # 현재 이미지 인덱스 설정
 current_index = 0
 current_word_index = 0
@@ -61,12 +60,12 @@ def color_grid(img, pos, paint = BLUE, pxstep=50):
 
 ####################################################################### function start
 
-def color_grid_2(img, pos, paint = BLUE, pxstep=50):
-	x = pos[0] 
-	y = pos[1] 
-	w, h = pxstep, pxstep
-	img = cv2.rectangle(img, (x, y), (x + w, y + h), paint, -1)
-	return img
+def color_grid_2(img, pos, paint=(0, 0, 255), pxstep=50):
+    x = pos[0] // pxstep * pxstep
+    y = (pos[1] - bottom_line // 2) // pxstep * pxstep
+    w, h = pxstep, pxstep
+    img = cv2.circle(img, (x, y), 5, paint, -1)  # 빨간색 원으로 표시
+    return img
 
 ####################################################################### function end
 
@@ -317,6 +316,46 @@ def display_canv(CANV_MODE, cur_pos=None):
 
 ################################################################################################## function start
 
+def display_canv(CANV_MODE, cur_pos=None):
+	# THIS FN returns RNG_POS and CUR_POS as TUPLES
+	# RETURN FORMAT: (TRUE_POS, CUR_POS) ..  RNG == TRUE
+	global focus, rng_pos              # focus 초점 상태/ rng_pos 랜덤 목표 위치를 설정
+	img = np.zeros((adj_H, W_px,3))
+
+	img = draw_grid(img, pxstep= GRID_STEP)   # grid를 그림
+	
+	if CANV_MODE == 'RNG':
+		#cv2.putText(img, str_pos, (cur_pos[0]+5, cur_pos[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1)
+		#rng_pos = random_sequence(img, cur_pos)
+		rng_pos = random_sequence(img)        # rng_pos 랜덤 좌표 설정
+	if CANV_MODE == 'SEQ':
+		rng_pos = demo_sequence(img)
+	if CANV_MODE == 'UPDOWN':
+		rng_pos = demo_updown(img)
+	if CANV_MODE == 'LEFTRIGHT':
+		rng_pos = demo_leftright(img)
+	if CANV_MODE == 'STABILITY':
+		rng_pos = demo_stability(img)
+
+	img = color_grid(img, rng_pos, paint = RED, pxstep=GRID_STEP)    # rng_pos 랜덤 좌표를 RED로 표시
+	if cur_pos:
+		#cur_pos = mid_point
+		# accuracy_measure(cur_pos, rng_pos)
+		str_pos = str(cur_pos)
+		img = color_grid(img, cur_pos, paint=BLUE, pxstep=GRID_STEP)   # cur_pos 현재 좌표를 BLUE로 표시
+		xy_cur = (cur_pos[0]//GRID_STEP*GRID_STEP,(cur_pos[1]-bottom_line//2)//GRID_STEP*GRID_STEP )
+		xy_rng = (rng_pos[0]//GRID_STEP*GRID_STEP,(rng_pos[1]-bottom_line//2)//GRID_STEP*GRID_STEP )
+		# IF RANDOM SPOT EQUALS THE ESTIMATED FOCUS SPOT COLOR IT GREEN!
+		if xy_cur == xy_rng:
+			img = color_grid(img, rng_pos, paint = GREEN, pxstep=GRID_STEP)
+	else:
+		cur_pos = (0,0)
+
+	# SHOW IMG
+	cv2.imshow('black_canv', img)
+	cv2.moveWindow("black_canv", 0,0)
+	return (rng_pos, cur_pos)
+
 def on_click(event):
     global current_index, current_word_index
 
@@ -392,9 +431,25 @@ def detect_text_bounding_box(image, current_word_index):
     return np.array(image_pil), current_box, total_words
 
 
-def display_easyocr_canv(CANV_MODE, cur_pos=None, custom_param=None):
-    global focus, current_index, current_word_index  # 초점 상태, 랜덤 목표 위치
-    global GRID_STEP, bottom_line
+# 시선 궤적을 저장하기 위한 리스트
+trail_positions = []
+MAX_TRAIL_LENGTH = 5  # 잔상의 최대 길이 (잔상의 길이를 조정할 수 있습니다)
+
+
+kalman = cv2.KalmanFilter(4, 2)
+kalman.measurementMatrix = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], np.float32)
+kalman.transitionMatrix = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32)
+kalman.processNoiseCov = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.03, 0], [0, 0, 0, 0.03]], np.float32)
+
+def display_laser_easyocr_canv(CANV_MODE, cur_pos=None, custom_param=None):
+    global focus, current_index, current_word_index
+    global GRID_STEP, bottom_line, trail_positions
+
+    if cur_pos is not None:
+        measurement = np.array([[np.float32(cur_pos[0])], [np.float32(cur_pos[1])]])
+        kalman.correct(measurement)
+        pred = kalman.predict()
+        cur_pos = (int(pred[0]), int(pred[1]))  # 괄호 수정
 
     # 디렉토리 설정 및 이미지 파일 목록 가져오기
     if custom_param == "hand":
@@ -422,62 +477,55 @@ def display_easyocr_canv(CANV_MODE, cur_pos=None, custom_param=None):
         return
 
     image_files = sorted([f for f in os.listdir(directory) if f.endswith(".jpg")])
+    img = np.zeros((adj_H, W_px, 3), dtype=np.uint8)
 
-    img = np.zeros((adj_H, W_px, 3), dtype=np.uint8)  # 초기 이미지 배경은 검정색으로 설정
-
-    # 이미지 로드
     image_path = os.path.join(directory, image_files[current_index])
     image = cv2.imread(image_path)
     if image is None:
         print(f"이미지를 불러올 수 없습니다: {image_files[current_index]}")
-        current_index += 1  # 이미지 로드 실패 시 다음 이미지로 이동
-        current_word_index = 0  # 단어 인덱스 초기화
+        current_index += 1
+        current_word_index = 0
         return
 
-    # 이미지를 고정된 캔버스 크기에 맞춰 리사이즈
     image = cv2.resize(image, (W_px, adj_H))
-
-    # 이미지 전체를 img에 복사 (이미지 크기를 맞춘 후 캔버스에 복사)
     img[:adj_H, :W_px] = image
 
     if CANV_MODE == 'RNG':
-        # 텍스트 감지 및 바운딩 박스 그리기 수행 (모든 단어)
         image_with_boxes, current_box, total_words = detect_text_bounding_box(image, current_word_index)
+        img = np.array(image_with_boxes)
 
-        # 현재 단어에 대한 바운딩 박스가 있는지 확인
         if current_box:
-            # 바운딩 박스 내부에 cur_pos가 있는지 확인
             x_min, y_min = current_box[0]
             x_max, y_max = current_box[1]
 
             if cur_pos:
-                # cur_pos를 그대로 사용 (그리드에 맞추지 않음)
-                # xy_cur = cur_pos
-                xy_cur = (cur_pos[0] // GRID_STEP * GRID_STEP, 
-                          (cur_pos[1] - bottom_line // 2) // GRID_STEP * GRID_STEP)
+                trail_positions.append(cur_pos)
+                if len(trail_positions) > MAX_TRAIL_LENGTH:
+                    trail_positions.pop(0)
 
-                # 바운딩 박스와 비교
+                for i in range(1, len(trail_positions)):
+                    cv2.line(img, trail_positions[i - 1], trail_positions[i], (0, 0, 255), 2)
+
+                xy_cur = (cur_pos[0], cur_pos[1])
                 if x_min <= xy_cur[0] <= x_max and y_min <= xy_cur[1] <= y_max:
-                    # cur_pos가 바운딩 박스 안에 있을 때만 다음 박스로 이동
+                    for _ in range(2):
+                        img_blink = img.copy()
+                        cv2.rectangle(img_blink, (int(x_min), int(y_min)), (int(x_max), int(y_max)), (0, 255, 0), 2)
+                        cv2.imshow('canvas', img_blink)
+                        cv2.waitKey(100)
+                        cv2.imshow('canvas', img)
+                        cv2.waitKey(100)
+
                     current_word_index += 1
-                    display_easyocr_canv.rng_pos_set = False  # 새로운 단어에 대한 좌표 설정을 준비
-                else:
-                    # 현재 좌표를 빨간색으로 표시 (그리드와 상관없이 cur_pos 좌표 그대로 표시)
-                    img = np.array(image_with_boxes)  # 바운딩 박스가 그려진 이미지를 사용
-                    img = color_grid(img, cur_pos, paint=RED, pxstep=GRID_STEP)  # 현재 좌표를 빨간색으로 표시
+                    display_laser_easyocr_canv.rng_pos_set = False
 
-            # 모든 단어(음절)가 감지되었으면 다음 이미지로 넘어가기
             if current_word_index >= total_words:
-                current_index += 1  # 다음 이미지로 이동
-                current_word_index = 0  # 단어 인덱스 초기화
-                display_easyocr_canv.rng_pos_set = False  # 새로운 이미지에 대한 좌표 설정을 준비
+                current_index += 1
+                current_word_index = 0
+                display_laser_easyocr_canv.rng_pos_set = False
 
-    cv2.imshow('canvas', img)  # 이미지를 출력
-
+    cv2.imshow('canvas', img)
     return cur_pos
-
-
-
 
 ################################################################################################## function end
 
@@ -503,4 +551,3 @@ def plot_eye_XYZ(pts, name, save_path):
 	else:
 		plt.savefig(name+'.pdf')
 	plt.close()
-	
